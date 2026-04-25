@@ -25,6 +25,9 @@ public class SecurityConfig {
     private JwtFilter jwtFilter;
 
     @Autowired
+    private RadiusApiKeyFilter radiusApiKeyFilter;
+
+    @Autowired
     private CorsConfigurationSource corsConfigurationSource;
 
     @Bean
@@ -37,6 +40,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/login", "/api/auth/logout", "/api/auth/me").permitAll()
                         .anyRequest().authenticated())
+                .addFilterBefore(radiusApiKeyFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();

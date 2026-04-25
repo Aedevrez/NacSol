@@ -1,0 +1,26 @@
+# Vendor-Specific Attributes (VSAs) for company-specific policy enforcement.
+#
+# These attributes carry authorization data beyond what standard RADIUS supports.
+# Spring returns them in the authorize response; FreeRADIUS relays them to the NAS
+# in the Access-Accept packet. NAS devices that don't understand a VSA silently
+# ignore it — this is expected.
+#
+# Replace 99999 with your IANA Private Enterprise Number (PEN) once allocated.
+
+VENDOR		MyCompany	99999
+
+BEGIN-VENDOR	MyCompany
+
+ATTRIBUTE	MyCompany-Department		1	string
+ATTRIBUTE	MyCompany-Role			2	string
+ATTRIBUTE	MyCompany-AccessTier		3	integer
+ATTRIBUTE	MyCompany-BandwidthLimit	4	integer
+ATTRIBUTE	MyCompany-DeviceType		5	string
+ATTRIBUTE	MyCompany-CostCenter		6	string
+
+VALUE		MyCompany-AccessTier		Guest		0
+VALUE		MyCompany-AccessTier		Employee	1
+VALUE		MyCompany-AccessTier		Admin		2
+VALUE		MyCompany-AccessTier		Contractor	3
+
+END-VENDOR	MyCompany

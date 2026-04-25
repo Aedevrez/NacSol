@@ -1,0 +1,149 @@
+######################################################################
+#
+# NacSol — FreeRADIUS virtual server (default)
+#
+# Architecture: FreeRADIUS is a thin RADIUS-to-HTTP gateway only.
+# ALL AAA logic lives in the Spring backend. FreeRADIUS makes no
+# accept/reject decisions of its own — it delegates every stage to
+# Spring via rlm_rest and reacts to the returned HTTP status code.
+#
+# Pipeline → Spring endpoint mapping:
+#   authorize    → POST /radius/authorize
+#   authenticate → POST /radius/authenticate   (Auth-Type rest)
+#   post-auth    → POST /radius/post-auth      (accept AND reject)
+#   accounting   → POST /radius/accounting
+#
+# preacct, pre-proxy, post-proxy are out of scope for this project.
+#
+######################################################################
+
+server default {
+
+	# ------------------------------------------------------------------
+	# Auth listener — standard UDP port 1812
+	# ------------------------------------------------------------------
+	listen {
+		type   = auth
+		ipaddr = *
+		port   = 0
+	}
+
+	# ------------------------------------------------------------------
+	# Accounting listener — standard UDP port 1813
+	# ------------------------------------------------------------------
+	listen {
+		type   = acct
+		ipaddr = *
+		port   = 0
+	}
+
+	# ------------------------------------------------------------------
+	# authorize
+	#
+	# Injects the API key header, then delegates to Spring.
+	# Spring returns RADIUS reply attributes (VLAN, session-timeout, VSAs)
+	# in the response body. FreeRADIUS applies them to the reply packet.
+	#
+	# Setting Auth-Type := rest here is mandatory — it tells FreeRADIUS
+	# to call our rest module in the authenticate section instead of
+	# attempting any local password check.
+	# ------------------------------------------------------------------
+	authorize {
+		# Sanitise the User-Name before doing anything else
+		filter_username
+
+		# Strip @realm from User-Name so Spring receives a bare username
+		# matching the network_users.username column
+		suffix
+
+		# Wire the inter-service API key for this request
+		update control {
+			&REST-HTTP-Header := "X-API-Key: change-me-in-production"
+			&REST-HTTP-Header += "X-Source: freeradius"
+		}
+
+		# Unconditionally delegate to Spring — no local auth ever
+		update control {
+			&Auth-Type := rest
+		}
+
+		rest
+	}
+
+	# ------------------------------------------------------------------
+	# authenticate
+	#
+	# Only the rest module runs here. Spring validates the PAP password
+	# (forwarded in plaintext over HTTPS) and returns 200/401/403/404.
+	# FreeRADIUS MUST NOT compare passwords or set Cleartext-Password.
+	# ------------------------------------------------------------------
+	authenticate {
+		Auth-Type rest {
+			update control {
+				&REST-HTTP-Header := "X-API-Key: change-me-in-production"
+				&REST-HTTP-Header += "X-Source: freeradius"
+			}
+			rest
+		}
+	}
+
+	# ------------------------------------------------------------------
+	# post-auth
+	#
+	# Fires on BOTH accept and reject — used purely for audit logging.
+	# We inject "authResult" into the request so the rest module's data
+	# template can include it in the JSON body.
+	# Tmp-String-0 is a built-in FreeRADIUS scratch attribute.
+	# ------------------------------------------------------------------
+	post-auth {
+		update request {
+			&Tmp-String-0 := "accept"
+		}
+		update control {
+			&REST-HTTP-Header := "X-API-Key: change-me-in-production"
+			&REST-HTTP-Header += "X-Source: freeradius"
+		}
+		rest
+
+		Post-Auth-Type REJECT {
+			update request {
+				&Tmp-String-0 := "reject"
+			}
+			update control {
+				&REST-HTTP-Header := "X-API-Key: change-me-in-production"
+				&REST-HTTP-Header += "X-Source: freeradius"
+			}
+			rest
+		}
+	}
+
+	# ------------------------------------------------------------------
+	# preacct
+	#
+	# Minimal: only compute Acct-Unique-Session-ID (needed for session
+	# correlation in Spring) and strip the realm suffix if present.
+	# No business logic here.
+	# ------------------------------------------------------------------
+	preacct {
+		preprocess
+		acct_unique
+		suffix
+	}
+
+	# ------------------------------------------------------------------
+	# accounting
+	#
+	# Forward the full session event to Spring. Spring is the sole system
+	# of record. No local SQL, detail files, or radutmp used.
+	# Spring should respond with 204 No Content.
+	# ------------------------------------------------------------------
+	accounting {
+		update control {
+			&REST-HTTP-Header := "X-API-Key: change-me-in-production"
+			&REST-HTTP-Header += "X-Source: freeradius"
+		}
+		rest
+	}
+
+	# session, pre-proxy, post-proxy intentionally omitted — out of scope.
+}

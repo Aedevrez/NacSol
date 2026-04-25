@@ -1,0 +1,94 @@
+rest {
+
+	# TLS config for HTTPS connections to the Spring backend.
+	# In development (HTTP localhost) this block is unused.
+	# In production: uncomment ca_info_file, check_cert, check_cert_cn.
+	tls {
+#		ca_info_file  = /etc/ssl/certs/ca-certificates.crt
+#		check_cert    = yes
+#		check_cert_cn = yes
+	}
+
+	# Spring backend base URL.
+	# Switch to https://your-backend-host in production — HTTPS is mandatory.
+	connect_uri = "http://127.0.0.1:8080"
+
+	# -------------------------------------------------------------------------
+	# authorize — user lookup and policy attribute loading.
+	# Spring returns RADIUS reply attributes (VLAN, session-timeout, VSAs).
+	# HTTP 200 → ok/updated (apply attributes)
+	# HTTP 403 → userlock (Access-Reject, account disabled)
+	# HTTP 404 → notfound (Access-Reject, user unknown)
+	# HTTP 5xx → fail    (Access-Reject, fail-safe)
+	# -------------------------------------------------------------------------
+	authorize {
+		uri    = "${..connect_uri}/radius/authorize"
+		method = 'post'
+		body   = 'json'
+		data   = '{"username":"%{User-Name}","password":"%{User-Password}","nasIp":"%{NAS-IP-Address}","nasId":"%{NAS-Identifier}","deviceMac":"%{Calling-Station-Id}","ssid":"%{urlquote:%{Called-Station-Id}}","serviceType":"%{Service-Type}","sessionId":"%{Acct-Unique-Session-ID}"}'
+		tls = ${..tls}
+	}
+
+	# -------------------------------------------------------------------------
+	# authenticate — credential validation (PAP over HTTPS).
+	# Spring is the only component that ever checks the password.
+	# HTTP 200 → ok      (Access-Accept)
+	# HTTP 401 → reject  (Access-Reject, wrong password)
+	# HTTP 403 → userlock (Access-Reject, account disabled)
+	# HTTP 404 → notfound (Access-Reject, user unknown)
+	# HTTP 5xx → fail    (Access-Reject, fail-safe)
+	# -------------------------------------------------------------------------
+	authenticate {
+		uri    = "${..connect_uri}/radius/authenticate"
+		method = 'post'
+		body   = 'json'
+		data   = '{"username":"%{User-Name}","password":"%{User-Password}","nasIp":"%{NAS-IP-Address}","nasId":"%{NAS-Identifier}","deviceMac":"%{Calling-Station-Id}","ssid":"%{urlquote:%{Called-Station-Id}}","serviceType":"%{Service-Type}","sessionId":"%{Acct-Unique-Session-ID}"}'
+		tls = ${..tls}
+	}
+
+	# -------------------------------------------------------------------------
+	# post-auth — audit log for both accept and reject events.
+	# authResult ("accept" or "reject") is injected by the virtual server
+	# via Tmp-String-0 before this module is called.
+	# HTTP 204/2xx → ok  (no reply attributes expected)
+	# HTTP 5xx     → fail (non-fatal for post-auth; logged but not rejected)
+	# -------------------------------------------------------------------------
+	post-auth {
+		uri    = "${..connect_uri}/radius/post-auth"
+		method = 'post'
+		body   = 'json'
+		data   = '{"username":"%{User-Name}","nasIp":"%{NAS-IP-Address}","nasId":"%{NAS-Identifier}","deviceMac":"%{Calling-Station-Id}","ssid":"%{urlquote:%{Called-Station-Id}}","serviceType":"%{Service-Type}","sessionId":"%{Acct-Unique-Session-ID}","authResult":"%{request:Tmp-String-0}"}'
+		tls = ${..tls}
+	}
+
+	# -------------------------------------------------------------------------
+	# accounting — session lifecycle (Start / Interim-Update / Stop).
+	# Spring is the system of record; FreeRADIUS stores nothing locally.
+	# statusType values: 1=Start, 2=Stop, 3=Interim-Update,
+	#                    7=Accounting-On, 8=Accounting-Off
+	# HTTP 204 → ok  (preferred — no body needed)
+	# HTTP 5xx → fail
+	# -------------------------------------------------------------------------
+	accounting {
+		uri    = "${..connect_uri}/radius/accounting"
+		method = 'post'
+		body   = 'json'
+		data   = '{"sessionId":"%{Acct-Unique-Session-ID}","nasSessionId":"%{Acct-Session-Id}","statusType":%{integer:Acct-Status-Type},"username":"%{User-Name}","nasIp":"%{NAS-IP-Address}","framedIp":"%{%{Framed-IP-Address}:-}","deviceMac":"%{Calling-Station-Id}","ssid":"%{urlquote:%{Called-Station-Id}}","sessionTime":%{%{Acct-Session-Time}:-0},"bytesIn":%{%{Acct-Input-Octets}:-0},"bytesOut":%{%{Acct-Output-Octets}:-0},"terminateCause":"%{%{Acct-Terminate-Cause}:-}"}'
+		tls = ${..tls}
+	}
+
+	# -------------------------------------------------------------------------
+	# Connection pool — tune max to match expected concurrent auth load.
+	# Each slot is one persistent HTTP connection to the Spring backend.
+	# -------------------------------------------------------------------------
+	pool {
+		start        = 5
+		min          = 4
+		max          = 10
+		spare        = 3
+		uses         = 0
+		retry_delay  = 30
+		lifetime     = 0
+		idle_timeout = 60
+	}
+}
